@@ -1,0 +1,9 @@
+target-version = "py311"
+line-length = 88
+
+[format]
+quote-style = "double"
+indent-style = "space"
+
+[lint]
+select = ["E", "F", "I", "UP"]
