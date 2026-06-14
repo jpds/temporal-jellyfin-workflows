@@ -1,0 +1,461 @@
+{
+  workerApp,
+  pkgs,
+  # Path to a GGUF model file used by llama-server. The flake passes a
+  # fetchurl derivation; override it to point to any GGUF on disk when
+  # iterating locally.
+  model,
+  ...
+}:
+
+let
+  authHeader = ''MediaBrowser Client="NixOS Integration Tests", DeviceId="jellyfin-rec-test", Device="TestDevice", Version="1.0.0"'';
+
+  jellyfinSetupPayload = pkgs.writeText "auth.json" (builtins.toJSON { Username = "jellyfin"; });
+  emptyPayload = pkgs.writeText "empty.json" (builtins.toJSON { });
+in
+{
+  name = "temporal-jellyfin";
+
+  nodes = {
+
+    jellyfin =
+      { pkgs, ... }:
+      {
+        networking.firewall.allowedTCPPorts = [ 8096 ];
+
+        services.jellyfin.enable = true;
+
+        environment.systemPackages = with pkgs; [
+          curl
+          ffmpeg
+          jq
+        ];
+
+        virtualisation = {
+          diskSize = 4 * 1024;
+          memorySize = 2 * 1024;
+        };
+      };
+
+    llm =
+      { ... }:
+      {
+        networking.firewall.allowedTCPPorts = [ 8080 ];
+
+        services.llama-cpp = {
+          enable = true;
+          settings = {
+            model = model;
+            host = "0.0.0.0";
+            port = 8080;
+          };
+        };
+
+        virtualisation = {
+          memorySize = 4 * 1024;
+          cores = 2;
+        };
+      };
+
+    temporal =
+      { pkgs, ... }:
+      {
+        networking.firewall.allowedTCPPorts = [ 7233 ];
+
+        environment.systemPackages = [
+          pkgs.grpc-health-probe
+          (pkgs.temporal-cli.overrideAttrs (_: rec {
+            version = "1.3.0";
+            src = pkgs.fetchFromGitHub {
+              owner = "temporalio";
+              repo = "cli";
+              tag = "v${version}";
+              hash = "sha256-9O+INXJhNwgwwvC0751ifdHmxbD0qI5A3LdDb4Krk/o=";
+            };
+            vendorHash = "sha256-Xe/qrlqg6DpCNmsO/liTKjWIaY3KznkOQdXSSoJVZq4=";
+            doCheck = false;
+          }))
+        ];
+
+        services.temporal = {
+          enable = true;
+          settings = {
+            log = {
+              stdout = true;
+              level = "info";
+            };
+            services = {
+              frontend.rpc = {
+                grpcPort = 7233;
+                membershipPort = 6933;
+                bindOnIP = "0.0.0.0";
+                httpPort = 7243;
+              };
+              matching.rpc = {
+                grpcPort = 7235;
+                membershipPort = 6935;
+                bindOnLocalHost = true;
+              };
+              history.rpc = {
+                grpcPort = 7234;
+                membershipPort = 6934;
+                bindOnLocalHost = true;
+              };
+              worker.rpc = {
+                grpcPort = 7239;
+                membershipPort = 6939;
+                bindOnLocalHost = true;
+              };
+            };
+            global.membership = {
+              maxJoinDuration = "30s";
+              broadcastAddress = "0.0.0.0";
+            };
+            persistence = {
+              defaultStore = "sqlite-default";
+              visibilityStore = "sqlite-visibility";
+              numHistoryShards = 1;
+              datastores = {
+                sqlite-default.sql = {
+                  pluginName = "sqlite";
+                  databaseName = "default";
+                  connectAddr = "localhost";
+                  connectProtocol = "tcp";
+                  connectAttributes = {
+                    mode = "memory";
+                    cache = "private";
+                  };
+                  maxConns = 1;
+                  maxIdleConns = 1;
+                  maxConnLifetime = "1h";
+                };
+                sqlite-visibility.sql = {
+                  pluginName = "sqlite";
+                  databaseName = "default";
+                  connectAddr = "localhost";
+                  connectProtocol = "tcp";
+                  connectAttributes = {
+                    mode = "memory";
+                    cache = "private";
+                  };
+                  maxConns = 1;
+                  maxIdleConns = 1;
+                  maxConnLifetime = "1h";
+                };
+              };
+            };
+            clusterMetadata = {
+              enableGlobalNamespace = false;
+              failoverVersionIncrement = 10;
+              masterClusterName = "active";
+              currentClusterName = "active";
+              clusterInformation.active = {
+                enabled = true;
+                initialFailoverVersion = 1;
+                rpcName = "frontend";
+                rpcAddress = "temporal:7233";
+                httpAddress = "temporal:7243";
+              };
+            };
+            dcRedirectionPolicy.policy = "noop";
+          };
+        };
+
+        virtualisation.cores = 2;
+      };
+
+    worker =
+      { pkgs, lib, ... }:
+      {
+        environment.systemPackages = [
+          (pkgs.temporal-cli.overrideAttrs (_: rec {
+            version = "1.3.0";
+            src = pkgs.fetchFromGitHub {
+              owner = "temporalio";
+              repo = "cli";
+              tag = "v${version}";
+              hash = "sha256-9O+INXJhNwgwwvC0751ifdHmxbD0qI5A3LdDb4Krk/o=";
+            };
+            vendorHash = "sha256-Xe/qrlqg6DpCNmsO/liTKjWIaY3KznkOQdXSSoJVZq4=";
+            doCheck = false;
+          }))
+        ];
+
+        systemd.services.jellyfin-recommender = {
+          after = [ "network-online.target" ];
+          wants = [ "network-online.target" ];
+
+          # The env file is written by the test script once Jellyfin is set up;
+          # the unit will not start until it exists.
+          unitConfig.ConditionPathExists = "/etc/jellyfin-recommender/env";
+
+          serviceConfig = {
+            ExecStart = "${lib.getExe' workerApp "recommender-worker.py"}";
+            EnvironmentFile = "/etc/jellyfin-recommender/env";
+            Restart = "on-failure";
+            RestartSec = "2s";
+            DynamicUser = true;
+          };
+        };
+      };
+
+  };
+
+  testScript =
+    let
+      jellyfinPost =
+        path: jsonFile:
+        "curl --fail -s -X POST 'http://jellyfin:8096${path}'"
+        + " -H 'Content-Type:application/json'"
+        + " -H 'X-Emby-Authorization:${authHeader}'"
+        + " -d '@${jsonFile}'";
+    in
+    ''
+      import json
+      from urllib.parse import urlencode
+
+      jellyfin.start()
+      jellyfin.wait_for_unit("jellyfin.service")
+      jellyfin.wait_for_open_port(8096)
+      jellyfin.wait_until_succeeds(
+          "journalctl --since -1m --unit jellyfin --grep 'Startup complete'"
+      )
+
+      with jellyfin.nested("Complete startup wizard"):
+          jellyfin.wait_until_succeeds(
+              "curl --fail -s 'http://jellyfin:8096/Startup/Configuration'"
+              """ -H 'X-Emby-Authorization:${authHeader}'"""
+          )
+          jellyfin.succeed(
+              "curl --fail -s 'http://jellyfin:8096/Startup/FirstUser'"
+              """ -H 'X-Emby-Authorization:${authHeader}'"""
+          )
+          jellyfin.succeed("""${jellyfinPost "/Startup/Complete" emptyPayload}""")
+
+      with jellyfin.nested("Authenticate as admin"):
+          auth_result = json.loads(
+              jellyfin.succeed("""${jellyfinPost "/Users/AuthenticateByName" jellyfinSetupPayload}""")
+          )
+          auth_token = auth_result["AccessToken"]
+          user_id = auth_result["User"]["Id"]
+
+      token_header = f'X-Emby-Authorization:${authHeader}, Token={auth_token}'
+
+      def api_get(path):
+          return f"curl --fail -s 'http://jellyfin:8096{path}' -H '{token_header}'"
+
+      def api_post(path, data="{}"):
+          return (
+              f"curl --fail -s -X POST 'http://jellyfin:8096{path}'"
+              f" -H 'Content-Type:application/json'"
+              f" -H '{token_header}'"
+              f" -d '{data}'"
+          )
+
+      with jellyfin.nested("Create movie library with fake films"):
+          movie_dir = jellyfin.succeed("mktemp -d -p /var/lib/jellyfin").strip()
+          jellyfin.succeed(f"chmod 755 '{movie_dir}'")
+
+          # (title, watched, favorite)
+          movies = [
+              ("Blade Runner 2049 (2017)", True,  True),
+              ("Arrival (2016)",           True,  True),
+              ("Bāhubali: The Beginning (2015)", True,  True),
+              ("Dune (2021)",              True,  False),
+              ("Interstellar (2014)",      True,  False),
+              ("Annihilation (2018)",      False, False),
+              ("Ex Machina (2014)",        False, False),
+          ]
+
+          for title, _watched, _fav in movies:
+              jellyfin.succeed(
+                  f"ffmpeg -f lavfi -i testsrc2=duration=1 '{movie_dir}/{title}.mkv' -y"
+              )
+
+          add_movie_lib = urlencode({
+              "name":           "Movies",
+              "collectionType": "movies",
+              "paths":          movie_dir,
+              "refreshLibrary": "true",
+          })
+          jellyfin.succeed(api_post(f"/Library/VirtualFolders?{add_movie_lib}"))
+
+      with jellyfin.nested("Create TV series library with fake shows"):
+          show_dir = jellyfin.succeed("mktemp -d -p /var/lib/jellyfin").strip()
+          jellyfin.succeed(f"chmod 755 '{show_dir}'")
+
+          # (title, watched, favorite)
+          series = [
+              ("The Wire (2002)",     True,  True),
+              ("Breaking Bad (2008)", True,  False),
+              ("Severance (2022)",    False, False),
+              ("Dark (2017)",         False, False),
+          ]
+
+          for title, _watched, _fav in series:
+              base = title.rsplit(" (", 1)[0]
+              ep_dir = f"{show_dir}/{title}/Season 01"
+              jellyfin.succeed(f"mkdir -p '{ep_dir}'")
+              jellyfin.succeed(
+                  f"ffmpeg -f lavfi -i testsrc2=duration=1 '{ep_dir}/{base} S01E01.mkv' -y"
+              )
+
+          add_show_lib = urlencode({
+              "name":           "TV Shows",
+              "collectionType": "tvshows",
+              "paths":          show_dir,
+              "refreshLibrary": "true",
+          })
+          jellyfin.succeed(api_post(f"/Library/VirtualFolders?{add_show_lib}"))
+
+      def library_idle(_):
+          folders = json.loads(jellyfin.succeed(api_get("/Library/VirtualFolders")))
+          return all(f.get("RefreshStatus") == "Idle" for f in folders)
+
+      retry(library_idle)
+
+      with jellyfin.nested("Wait for all movies to appear"):
+          movie_items = []
+
+          def has_all_movies(_):
+              global movie_items
+              result = json.loads(
+                  jellyfin.succeed(
+                      api_get(f"/Users/{user_id}/Items?IncludeItemTypes=Movie&Recursive=true")
+                  )
+              )
+              movie_items = result["Items"]
+              return len(movie_items) == len(movies)
+
+          retry(has_all_movies)
+
+      with jellyfin.nested("Wait for all series to appear"):
+          series_items = []
+
+          def has_all_series(_):
+              global series_items
+              result = json.loads(
+                  jellyfin.succeed(
+                      api_get(f"/Users/{user_id}/Items?IncludeItemTypes=Series&Recursive=true")
+                  )
+              )
+              series_items = result["Items"]
+              return len(series_items) == len(series)
+
+          retry(has_all_series)
+
+      with jellyfin.nested("Mark watched and favorite films"):
+          name_to_id = {item["Name"]: item["Id"] for item in movie_items}
+
+          for title, watched, fav in movies:
+              base = title.rsplit(" (", 1)[0]
+              item_id = next(
+                  (v for k, v in name_to_id.items() if base in k), None
+              )
+              if item_id is None:
+                  raise Exception(
+                      f"Could not find Jellyfin item for '{title}' in {list(name_to_id)}"
+                  )
+              if watched:
+                  jellyfin.succeed(api_post(f"/Users/{user_id}/PlayedItems/{item_id}"))
+              if fav:
+                  jellyfin.succeed(api_post(f"/Users/{user_id}/FavoriteItems/{item_id}"))
+
+      with jellyfin.nested("Mark watched and favorite series"):
+          name_to_id = {item["Name"]: item["Id"] for item in series_items}
+
+          for title, watched, fav in series:
+              base = title.rsplit(" (", 1)[0]
+              item_id = next(
+                  (v for k, v in name_to_id.items() if base in k), None
+              )
+              if item_id is None:
+                  raise Exception(
+                      f"Could not find Jellyfin item for '{title}' in {list(name_to_id)}"
+                  )
+              if watched:
+                  episodes = json.loads(
+                      jellyfin.succeed(
+                          api_get(
+                              f"/Users/{user_id}/Items"
+                              f"?ParentId={item_id}&IncludeItemTypes=Episode&Recursive=true"
+                          )
+                      )
+                  )
+                  for ep in episodes.get("Items", []):
+                      jellyfin.succeed(api_post(f"/Users/{user_id}/PlayedItems/{ep['Id']}"))
+              if fav:
+                  jellyfin.succeed(api_post(f"/Users/{user_id}/FavoriteItems/{item_id}"))
+
+      llm.start()
+      llm.wait_for_unit("llama-cpp.service")
+      llm.wait_for_open_port(8080)
+      llm.wait_until_succeeds("curl --fail -s http://localhost:8080/health")
+
+      temporal.start()
+      temporal.wait_for_unit("temporal.service")
+      temporal.wait_for_open_port(7233)
+      temporal.wait_until_succeeds(
+          "grpc-health-probe -addr=127.0.0.1:7233"
+          " -service=temporal.api.workflowservice.v1.WorkflowService"
+      )
+      temporal.wait_until_succeeds(
+          "journalctl -o cat -u temporal.service | grep 'Frontend is now healthy'"
+      )
+      temporal.log(
+          temporal.wait_until_succeeds(
+              "temporal operator namespace create --namespace jellyfin --address 127.0.0.1:7233",
+              timeout=60,
+          )
+      )
+
+      worker.start()
+      worker.systemctl("start network-online.target")
+      worker.wait_for_unit("network-online.target")
+
+      worker.succeed(f"""
+          mkdir -p /etc/jellyfin-recommender
+          cat > /etc/jellyfin-recommender/env <<'ENVEOF'
+      JELLYFIN_URL=http://jellyfin:8096
+      JELLYFIN_API_KEY={auth_token}
+      JELLYFIN_USER_ID={user_id}
+      OPENAI_BASE_URL=http://llm:8080/v1
+      OPENAI_API_KEY=not-needed
+      RECOMMENDER_MODEL=llama
+      TEMPORAL_ADDRESS=temporal:7233
+      TEMPORAL_NAMESPACE=jellyfin
+      TEMPORAL_TASK_QUEUE=recommendations-queue
+      ENVEOF
+      """)
+
+      worker.systemctl("start jellyfin-recommender.service")
+      worker.wait_for_unit("jellyfin-recommender.service")
+
+      temporal.succeed(
+          "temporal workflow start"
+          " --namespace jellyfin"
+          " --address 127.0.0.1:7233"
+          " --type RecommendationsWorkflow"
+          " --task-queue recommendations-queue"
+          " --workflow-id jellyfin-rec-test"
+      )
+
+      result_json = json.loads(
+          temporal.wait_until_succeeds(
+              "temporal workflow result"
+              " --namespace jellyfin"
+              " --address 127.0.0.1:7233"
+              " --workflow-id jellyfin-rec-test"
+              " --output json",
+              timeout=300,
+          )
+      )
+
+      assert result_json["status"] == "COMPLETED", (
+          f"Workflow did not complete successfully: {result_json}"
+      )
+      assert result_json["result"], "Workflow returned an empty result"
+      temporal.log(f"Recommendations:\n{result_json['result']}")
+    '';
+}
