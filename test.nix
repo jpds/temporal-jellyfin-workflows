@@ -1,5 +1,6 @@
 {
-  workerApp,
+  recommendationsWorkerApp,
+  missingSeasonsWorkerApp,
   pkgs,
   # Path to a GGUF model file used by llama-server. The flake passes a
   # fetchurl derivation; override it to point to any GGUF on disk when
@@ -13,6 +14,86 @@ let
 
   jellyfinSetupPayload = pkgs.writeText "auth.json" (builtins.toJSON { Username = "jellyfin"; });
   emptyPayload = pkgs.writeText "empty.json" (builtins.toJSON { });
+
+  mkShow = id: name: [ { show = { inherit id name; }; } ];
+  mkSeasons = ns: map (n: { number = n; }) ns;
+
+  tvmazeMockRoot =
+    let
+      files = {
+        "search-the-wire.json"     = mkShow 1 "The Wire";
+        "search-breaking-bad.json" = mkShow 2 "Breaking Bad";
+        "search-severance.json"    = mkShow 3 "Severance";
+        "search-dark.json"         = mkShow 4 "Dark";
+        "seasons-1.json" = mkSeasons [ 1 2 3 4 5 ];
+        "seasons-2.json" = mkSeasons [ 1 2 3 4 5 ];
+        "seasons-3.json" = mkSeasons [ 1 2 ];
+        "seasons-4.json" = mkSeasons [ 1 2 3 ];
+      };
+    in
+    pkgs.linkFarm "tvmaze-mock-root" (
+      pkgs.lib.mapAttrsToList (name: data: {
+        inherit name;
+        path = pkgs.writeText name (builtins.toJSON data);
+      }) files
+    );
+
+  tvmazeMockConfig = pkgs.writeText "Caddyfile" ''
+    :8081 {
+      root * ${tvmazeMockRoot}
+
+      @searchWire {
+        path /search/shows
+        expression `{http.request.uri.query} == "q=The+Wire"`
+      }
+      @searchBB {
+        path /search/shows
+        expression `{http.request.uri.query} == "q=Breaking+Bad"`
+      }
+      @searchSev {
+        path /search/shows
+        query q=Severance
+      }
+      @searchDark {
+        path /search/shows
+        query q=Dark
+      }
+
+      handle @searchWire {
+        rewrite * /search-the-wire.json
+        file_server
+      }
+      handle @searchBB {
+        rewrite * /search-breaking-bad.json
+        file_server
+      }
+      handle @searchSev {
+        rewrite * /search-severance.json
+        file_server
+      }
+      handle @searchDark {
+        rewrite * /search-dark.json
+        file_server
+      }
+
+      handle /shows/1/seasons {
+        rewrite * /seasons-1.json
+        file_server
+      }
+      handle /shows/2/seasons {
+        rewrite * /seasons-2.json
+        file_server
+      }
+      handle /shows/3/seasons {
+        rewrite * /seasons-3.json
+        file_server
+      }
+      handle /shows/4/seasons {
+        rewrite * /seasons-4.json
+        file_server
+      }
+    }
+  '';
 in
 {
   name = "temporal-jellyfin";
@@ -165,6 +246,17 @@ in
         virtualisation.cores = 2;
       };
 
+    mock-api =
+      { ... }:
+      {
+        networking.firewall.allowedTCPPorts = [ 8081 ];
+
+        services.caddy = {
+          enable = true;
+          configFile = tvmazeMockConfig;
+        };
+      };
+
     worker =
       { pkgs, lib, ... }:
       {
@@ -185,14 +277,23 @@ in
         systemd.services.jellyfin-recommender = {
           after = [ "network-online.target" ];
           wants = [ "network-online.target" ];
-
-          # The env file is written by the test script once Jellyfin is set up;
-          # the unit will not start until it exists.
           unitConfig.ConditionPathExists = "/etc/jellyfin-recommender/env";
-
           serviceConfig = {
-            ExecStart = "${lib.getExe' workerApp "recommender-worker.py"}";
+            ExecStart = "${lib.getExe' recommendationsWorkerApp "recommender-worker.py"}";
             EnvironmentFile = "/etc/jellyfin-recommender/env";
+            Restart = "on-failure";
+            RestartSec = "2s";
+            DynamicUser = true;
+          };
+        };
+
+        systemd.services.jellyfin-missing-seasons = {
+          after = [ "network-online.target" ];
+          wants = [ "network-online.target" ];
+          unitConfig.ConditionPathExists = "/etc/jellyfin-missing-seasons/env";
+          serviceConfig = {
+            ExecStart = "${lib.getExe' missingSeasonsWorkerApp "missing-seasons-worker.py"}";
+            EnvironmentFile = "/etc/jellyfin-missing-seasons/env";
             Restart = "on-failure";
             RestartSec = "2s";
             DynamicUser = true;
@@ -393,6 +494,10 @@ in
       llm.wait_for_open_port(8080)
       llm.wait_until_succeeds("curl --fail -s http://localhost:8080/health")
 
+      mock_api.start()
+      mock_api.wait_for_unit("caddy.service")
+      mock_api.wait_for_open_port(8081)
+
       temporal.start()
       temporal.wait_for_unit("temporal.service")
       temporal.wait_for_open_port(7233)
@@ -414,48 +519,90 @@ in
       worker.systemctl("start network-online.target")
       worker.wait_for_unit("network-online.target")
 
-      worker.succeed(f"""
-          mkdir -p /etc/jellyfin-recommender
-          cat > /etc/jellyfin-recommender/env <<'ENVEOF'
+      common_env = f"""\
       JELLYFIN_URL=http://jellyfin:8096
       JELLYFIN_API_KEY={auth_token}
       JELLYFIN_USER_ID={user_id}
       OPENAI_BASE_URL=http://llm:8080/v1
       OPENAI_API_KEY=not-needed
-      RECOMMENDER_MODEL=llama
+      RECOMMENDER_MODEL=gemma4:e2b
       TEMPORAL_ADDRESS=temporal:7233
       TEMPORAL_NAMESPACE=jellyfin
-      TEMPORAL_TASK_QUEUE=recommendations-queue
+      """
+
+      worker.succeed(f"""
+          mkdir -p /etc/jellyfin-recommender
+          cat > /etc/jellyfin-recommender/env <<'ENVEOF'
+      {common_env}TEMPORAL_TASK_QUEUE=recommendations-queue
+      ENVEOF
+      """)
+
+      worker.succeed(f"""
+          mkdir -p /etc/jellyfin-missing-seasons
+          cat > /etc/jellyfin-missing-seasons/env <<'ENVEOF'
+      {common_env}TEMPORAL_TASK_QUEUE=missing-seasons-queue
+      TVMAZE_BASE_URL=http://mock-api:8081
       ENVEOF
       """)
 
       worker.systemctl("start jellyfin-recommender.service")
       worker.wait_for_unit("jellyfin-recommender.service")
 
-      temporal.succeed(
-          "temporal workflow start"
-          " --namespace jellyfin"
-          " --address 127.0.0.1:7233"
-          " --type RecommendationsWorkflow"
-          " --task-queue recommendations-queue"
-          " --workflow-id jellyfin-rec-test"
-      )
+      worker.systemctl("start jellyfin-missing-seasons.service")
+      worker.wait_for_unit("jellyfin-missing-seasons.service")
 
-      result_json = json.loads(
-          temporal.wait_until_succeeds(
-              "temporal workflow result"
+      with temporal.nested("Run RecommendationsWorkflow"):
+          temporal.succeed(
+              "temporal workflow start"
               " --namespace jellyfin"
               " --address 127.0.0.1:7233"
+              " --type RecommendationsWorkflow"
+              " --task-queue recommendations-queue"
               " --workflow-id jellyfin-rec-test"
-              " --output json",
-              timeout=300,
           )
-      )
 
-      assert result_json["status"] == "COMPLETED", (
-          f"Workflow did not complete successfully: {result_json}"
-      )
-      assert result_json["result"], "Workflow returned an empty result"
-      temporal.log(f"Recommendations:\n{result_json['result']}")
+          result_json = json.loads(
+              temporal.wait_until_succeeds(
+                  "temporal workflow result"
+                  " --namespace jellyfin"
+                  " --address 127.0.0.1:7233"
+                  " --workflow-id jellyfin-rec-test"
+                  " --output json",
+                  timeout=300,
+              )
+          )
+
+          assert result_json["status"] == "COMPLETED", (
+              f"RecommendationsWorkflow did not complete: {result_json}"
+          )
+          assert result_json["result"], "RecommendationsWorkflow returned empty result"
+          temporal.log(f"Recommendations:\n{result_json['result']}")
+
+      with temporal.nested("Run MissingSeasonsWorkflow"):
+          temporal.succeed(
+              "temporal workflow start"
+              " --namespace jellyfin"
+              " --address 127.0.0.1:7233"
+              " --type MissingSeasonsWorkflow"
+              " --task-queue missing-seasons-queue"
+              " --workflow-id missing-seasons-test"
+          )
+
+          result_json = json.loads(
+              temporal.wait_until_succeeds(
+                  "temporal workflow result"
+                  " --namespace jellyfin"
+                  " --address 127.0.0.1:7233"
+                  " --workflow-id missing-seasons-test"
+                  " --output json",
+                  timeout=300,
+              )
+          )
+
+          assert result_json["status"] == "COMPLETED", (
+              f"MissingSeasonsWorkflow did not complete: {result_json}"
+          )
+          assert result_json["result"], "MissingSeasonsWorkflow returned empty result"
+          temporal.log(f"Missing seasons report:\n{result_json['result']}")
     '';
 }

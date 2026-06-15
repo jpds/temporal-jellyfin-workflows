@@ -29,7 +29,7 @@ The worker is configured entirely through environment variables:
 | `RECOMMENDER_MODEL` | Model name passed to the agent (default: `gpt-4o`) |
 | `TEMPORAL_ADDRESS` | Temporal frontend address (default: `localhost:7233`) |
 | `TEMPORAL_NAMESPACE` | Temporal namespace (default: `default`) |
-| `TEMPORAL_TASK_QUEUE` | Task queue name (default: `recommendations-queue`) |
+| `TEMPORAL_TASK_QUEUE` | Task queue name (default: `jellyfin-recommendations-queue`) |
 
 ## Running
 
@@ -60,7 +60,7 @@ python recommender-worker.py
 temporal workflow start \
   --namespace jellyfin-rec \
   --type RecommendationsWorkflow \
-  --task-queue recommendations-queue \
+  --task-queue jellyfin-recommendations-queue \
   --workflow-id my-recommendations
 
 temporal workflow result \

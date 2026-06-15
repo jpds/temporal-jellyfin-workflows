@@ -65,8 +65,8 @@
           };
         };
 
-        workflowLib = python3.pkgs.buildPythonPackage rec {
-          pname = "jellyfin-recommender-lib";
+        commonLib = python3.pkgs.buildPythonPackage rec {
+          pname = "jellyfin-workflows-lib";
           version = "1.0.0";
           pyproject = false;
 
@@ -91,12 +91,12 @@
           ];
 
           meta = with pkgs.lib; {
-            description = "Temporal Jellyfin recommender workflow libraries";
+            description = "Shared Temporal Jellyfin workflow libraries";
             license = licenses.mit;
           };
         };
 
-        workerApp = python3.pkgs.buildPythonApplication rec {
+        recommendationsWorkerApp = python3.pkgs.buildPythonApplication rec {
           pname = "jellyfin-recommender-worker";
           version = "1.0.0";
           pyproject = false;
@@ -109,7 +109,7 @@
 
           propagatedBuildInputs = with python3.pkgs; [
             temporalio
-            workflowLib
+            commonLib
           ];
 
           meta = with pkgs.lib; {
@@ -118,10 +118,33 @@
           };
         };
 
+        missingSeasonsWorkerApp = python3.pkgs.buildPythonApplication rec {
+          pname = "jellyfin-missing-seasons-worker";
+          version = "1.0.0";
+          pyproject = false;
+
+          dontUnpack = true;
+
+          installPhase = ''
+            install -Dm755 ${./missing-seasons-worker.py} $out/bin/missing-seasons-worker.py
+          '';
+
+          propagatedBuildInputs = with python3.pkgs; [
+            temporalio
+            commonLib
+          ];
+
+          meta = with pkgs.lib; {
+            description = "Temporal Jellyfin missing seasons worker";
+            license = licenses.mit;
+          };
+        };
+
       in
       {
-        packages.workerApp = workerApp;
-        packages.default = workerApp;
+        packages.recommendationsWorkerApp = recommendationsWorkerApp;
+        packages.missingSeasonsWorkerApp = missingSeasonsWorkerApp;
+        packages.default = recommendationsWorkerApp;
 
         devShells.default = pkgs.mkShell {
           packages = [
@@ -139,7 +162,7 @@
 
         checks.jellyfin-recommender = pkgs.testers.runNixOSTest (
           import ./test.nix {
-            inherit workerApp pkgs;
+            inherit recommendationsWorkerApp missingSeasonsWorkerApp pkgs;
             model = pkgs.fetchurl {
               url = "https://huggingface.co/unsloth/gemma-4-E2B-it-qat-GGUF/resolve/45dde4a86b6c5dce72297198762d2e8e68c0cbd4/gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf";
               hash = "sha256-zUUmST3Mv9Z5G+6IIuN+MDQAdNHU2araUs4Jr+/Wozo=";
