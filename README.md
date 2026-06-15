@@ -1,23 +1,42 @@
 # Temporal Jellyfin Workflows
 
-A [Temporal](https://temporal.io) workflow that fetches your Jellyfin watch history and favorites,
-then uses an OpenAI-compatible LLM to produce personalised film and TV recommendations.
+[Temporal](https://temporal.io) workflows that connect your Jellyfin library to an
+OpenAI-compatible LLM. Two workflows are provided:
+
+- **`RecommendationsWorkflow`**: personalised film and TV recommendations based on your watch
+  history and favorites
+- **`MissingSeasonsWorkflow`**: identifies incomplete TV series in your library, distinguishing
+  gap seasons (blocking a continuous run) from trailing seasons (newer releases not yet collected)
 
 ## How it works
 
-The `RecommendationsWorkflow` runs six Temporal activities in parallel to fetch from Jellyfin:
+### RecommendationsWorkflow
+
+Six Temporal activities run in parallel to fetch from Jellyfin:
 
 - Favorites (movies + series)
 - Watched movies / series
 - Unwatched movies / series
 - In-progress series (via Jellyfin's Next Up API)
 
-The results are assembled into a prompt and sent to an LLM via the OpenAI Agents SDK. The workflow
-returns the model's recommendation text as its result.
+The results are assembled into a prompt and sent to an LLM via the OpenAI Agents SDK. The workflow returns the model's
+recommendation text as its result.
+
+### MissingSeasonsWorkflow
+
+1. Fetches all series from your Jellyfin library along with their owned season numbers
+2. Looks up the full season list for each series from TMDB (preferred) or TVMaze, including
+   premiere dates
+3. Computes missing seasons, split into:
+   - **Gap**: seasons between ones you own, blocking a continuous viewing run
+   - **Trailing**: newer seasons you have not yet collected
+4. Seasons without a known premiere date are labelled `(TBA)`; the agent is instructed to treat
+   those and future-dated seasons as upcoming rather than simply missing
+5. The report is sent to an LLM which summarises what to acquire, prioritising gap seasons
 
 ## Configuration
 
-The worker is configured entirely through environment variables:
+Both workers share most environment variables. `TEMPORAL_TASK_QUEUE` differs between them.
 
 | Variable | Description |
 |---|---|
@@ -27,9 +46,10 @@ The worker is configured entirely through environment variables:
 | `OPENAI_BASE_URL` | OpenAI-compatible API base URL (e.g. `http://localhost:8080/v1` for `llama.cpp`) |
 | `OPENAI_API_KEY` | API key (not needed for local models) |
 | `RECOMMENDER_MODEL` | Model name passed to the agent (default: `gpt-4o`) |
+| `TMDB_API_KEY` | TMDB API key for season lookups (optional; falls back to TVMaze) |
 | `TEMPORAL_ADDRESS` | Temporal frontend address (default: `localhost:7233`) |
 | `TEMPORAL_NAMESPACE` | Temporal namespace (default: `default`) |
-| `TEMPORAL_TASK_QUEUE` | Task queue name (default: `jellyfin-recommendations-queue`) |
+| `TEMPORAL_TASK_QUEUE` | Task queue name (see per-worker defaults below) |
 
 ## Running
 
@@ -38,34 +58,50 @@ The worker is configured entirely through environment variables:
 ```bash
 nix-shell -p temporal-cli --run "temporal server start-dev"
 ```
+
 ### With Nix
 
 ```bash
-# Enter the dev shell
 nix develop
 
-# Run the worker directly
+# Recommendations worker (task queue: recommendations-queue)
 JELLYFIN_URL=http://localhost:8096 \
 JELLYFIN_API_KEY=<token> \
 JELLYFIN_USER_ID=<uuid> \
 OPENAI_BASE_URL=http://localhost:8080/v1 \
 OPENAI_API_KEY=not-needed \
-RECOMMENDER_MODEL=gemma4:e4b \
+RECOMMENDER_MODEL=gemma4:e2b \
 python recommender-worker.py
+
+# Missing seasons worker (task queue: missing-seasons-queue)
+JELLYFIN_URL=http://localhost:8096 \
+JELLYFIN_API_KEY=<token> \
+JELLYFIN_USER_ID=<uuid> \
+TMDB_API_KEY=<tmdb-key> \
+OPENAI_BASE_URL=http://localhost:8080/v1 \
+OPENAI_API_KEY=not-needed \
+RECOMMENDER_MODEL=gemma4:e2b \
+python missing-seasons-worker.py
 ```
 
-### Triggering a workflow
+### Triggering workflows
 
 ```bash
+# Recommendations
 temporal workflow start \
-  --namespace jellyfin-rec \
   --type RecommendationsWorkflow \
-  --task-queue jellyfin-recommendations-queue \
+  --task-queue recommendations-queue \
   --workflow-id my-recommendations
 
-temporal workflow result \
-  --namespace jellyfin-rec \
-  --workflow-id my-recommendations
+temporal workflow result --workflow-id my-recommendations
+
+# Missing seasons
+temporal workflow start \
+  --type MissingSeasonsWorkflow \
+  --task-queue missing-seasons-queue \
+  --workflow-id my-missing-seasons
+
+temporal workflow result --workflow-id my-missing-seasons
 ```
 
 ## Testing
@@ -75,10 +111,10 @@ The NixOS VM test spins up the following in a set of VMs:
 * Jellyfin
 * `llama.cpp` server (using `Gemma4 E2B QAT`)
 * Temporal
-* The recommendation workflow worker
+* The workflow workers
 
-A small movie and TV library is seeded, marked with watched/favorite states, the workflow is then
-triggered, and asserts it completes with a non-empty result.
+A small movie and TV library is seeded with watched/favorite states, the workflows are triggered,
+and the test asserts they complete with non-empty results.
 
 ```bash
 nix flake check -L
