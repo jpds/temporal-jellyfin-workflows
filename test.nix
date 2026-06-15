@@ -16,7 +16,7 @@ let
   emptyPayload = pkgs.writeText "empty.json" (builtins.toJSON { });
 
   mkShow = id: name: [ { show = { inherit id name; }; } ];
-  mkSeasons = ns: map (n: { number = n; }) ns;
+  mkSeasons = map ({ n, d }: { number = n; premiereDate = d; });
 
   tvmazeMockRoot =
     let
@@ -25,10 +25,24 @@ let
         "search-breaking-bad.json" = mkShow 2 "Breaking Bad";
         "search-severance.json"    = mkShow 3 "Severance";
         "search-dark.json"         = mkShow 4 "Dark";
-        "seasons-1.json" = mkSeasons [ 1 2 3 4 5 ];
-        "seasons-2.json" = mkSeasons [ 1 2 3 4 5 ];
-        "seasons-3.json" = mkSeasons [ 1 2 ];
-        "seasons-4.json" = mkSeasons [ 1 2 3 ];
+        "seasons-1.json" = mkSeasons [
+          { n = 1; d = "2002-06-02"; } { n = 2; d = "2003-06-01"; }
+          { n = 3; d = "2004-09-19"; } { n = 4; d = "2006-09-10"; }
+          { n = 5; d = "2008-01-06"; }
+        ];
+        "seasons-2.json" = mkSeasons [
+          { n = 1; d = "2008-01-20"; } { n = 2; d = "2009-03-08"; }
+          { n = 3; d = "2010-03-21"; } { n = 4; d = "2011-07-17"; }
+          { n = 5; d = "2012-07-15"; }
+        ];
+        "seasons-3.json" = mkSeasons [
+          { n = 1; d = "2022-02-18"; } { n = 2; d = "2025-01-17"; }
+          { n = 3; d = "2027-03-01"; }
+        ];
+        "seasons-4.json" = mkSeasons [
+          { n = 1; d = "2017-12-01"; } { n = 2; d = "2019-06-21"; }
+          { n = 3; d = "2020-06-27"; }
+        ];
       };
     in
     pkgs.linkFarm "tvmaze-mock-root" (
