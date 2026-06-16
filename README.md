@@ -1,12 +1,14 @@
 # Temporal Jellyfin Workflows
 
 [Temporal](https://temporal.io) workflows that connect your Jellyfin library to an
-OpenAI-compatible LLM. Two workflows are provided:
+OpenAI-compatible LLM. Three workflows are provided:
 
 - **`RecommendationsWorkflow`**: personalised film and TV recommendations based on your watch
   history and favorites
 - **`MissingSeasonsWorkflow`**: identifies incomplete TV series in your library, distinguishing
   gap seasons (blocking a continuous run) from trailing seasons (newer releases not yet collected)
+- **`DirectorCompletenessWorkflow`**: finds directors well-represented in your movie collection
+  and surfaces the gaps in their filmography
 
 ## How it works
 
@@ -34,9 +36,22 @@ recommendation text as its result.
    those and future-dated seasons as upcoming rather than simply missing
 5. The report is sent to an LLM which summarises what to acquire, prioritising gap seasons
 
+
+### DirectorCompletenessWorkflow
+
+1. Fetches all movies from your Jellyfin library with their director metadata
+2. Identifies directors with at least 2 films in your collection
+3. For each director, resolves a TMDB person ID - checking Jellyfin's stored provider IDs
+   first, falling back to a TMDB name search
+4. Fetches each director's full filmography from TMDB in parallel
+5. Computes missing films using your full movie library as the exclusion set (not just films
+   Jellyfin has attributed to that director, to handle incomplete metadata)
+6. The report is sent to an LLM which summarises the gaps, prioritising directors where you
+   are closest to a complete collection
+
 ## Configuration
 
-Both workers share most environment variables. `TEMPORAL_TASK_QUEUE` differs between them.
+All workers share most environment variables. `TEMPORAL_TASK_QUEUE` differs between them.
 
 | Variable | Description |
 |---|---|
@@ -46,7 +61,7 @@ Both workers share most environment variables. `TEMPORAL_TASK_QUEUE` differs bet
 | `OPENAI_BASE_URL` | OpenAI-compatible API base URL (e.g. `http://localhost:8080/v1` for `llama.cpp`) |
 | `OPENAI_API_KEY` | API key (not needed for local models) |
 | `RECOMMENDER_MODEL` | Model name passed to the agent (default: `gpt-4o`) |
-| `TMDB_API_KEY` | TMDB API key for season lookups (optional; falls back to TVMaze) |
+| `TMDB_API_KEY` | TMDB API key; required for `DirectorCompletenessWorkflow`, optional for `MissingSeasonsWorkflow` (falls back to TVMaze) |
 | `TEMPORAL_ADDRESS` | Temporal frontend address (default: `localhost:7233`) |
 | `TEMPORAL_NAMESPACE` | Temporal namespace (default: `default`) |
 | `TEMPORAL_TASK_QUEUE` | Task queue name (see per-worker defaults below) |
@@ -82,6 +97,16 @@ OPENAI_BASE_URL=http://localhost:8080/v1 \
 OPENAI_API_KEY=not-needed \
 RECOMMENDER_MODEL=gemma4:e2b \
 python missing-seasons-worker.py
+
+# Director completeness worker (task queue: director-completeness-queue)
+JELLYFIN_URL=http://localhost:8096 \
+JELLYFIN_API_KEY=<token> \
+JELLYFIN_USER_ID=<uuid> \
+TMDB_API_KEY=<tmdb-key> \
+OPENAI_BASE_URL=http://localhost:8080/v1 \
+OPENAI_API_KEY=not-needed \
+RECOMMENDER_MODEL=gemma4:e2b \
+python director-completeness-worker.py
 ```
 
 ### Triggering workflows
@@ -102,6 +127,14 @@ temporal workflow start \
   --workflow-id my-missing-seasons
 
 temporal workflow result --workflow-id my-missing-seasons
+
+# Director completeness
+temporal workflow start \
+  --type DirectorCompletenessWorkflow \
+  --task-queue director-completeness-queue \
+  --workflow-id my-director-completeness
+
+temporal workflow result --workflow-id my-director-completeness
 ```
 
 ## Testing
