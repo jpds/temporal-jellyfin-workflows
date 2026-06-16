@@ -1,6 +1,7 @@
 {
   recommendationsWorkerApp,
   missingSeasonsWorkerApp,
+  directorCompletenessWorkerApp,
   pkgs,
   # Path to a GGUF model file used by llama-server. The flake passes a
   # fetchurl derivation; override it to point to any GGUF on disk when
@@ -39,6 +40,17 @@ let
           { n = 1; d = "2022-02-18"; } { n = 2; d = "2025-01-17"; }
           { n = 3; d = "2027-03-01"; }
         ];
+
+        "tmdb-search-villeneuve.json" = { results = [ { id = 1001; } ]; };
+        "tmdb-villeneuve-credits.json" = {
+          crew = [
+            { title = "Incendies";       release_date = "2010-09-02"; popularity = 12; job = "Director"; }
+            { title = "Sicario";         release_date = "2015-09-18"; popularity = 22; job = "Director"; }
+            { title = "Arrival";         release_date = "2016-11-11"; popularity = 31; job = "Director"; }
+            { title = "Blade Runner 2049"; release_date = "2017-10-06"; popularity = 41; job = "Director"; }
+            { title = "Dune";            release_date = "2021-10-22"; popularity = 82; job = "Director"; }
+          ];
+        };
         "seasons-4.json" = mkSeasons [
           { n = 1; d = "2017-12-01"; } { n = 2; d = "2019-06-21"; }
           { n = 3; d = "2020-06-27"; }
@@ -104,6 +116,16 @@ let
       }
       handle /shows/4/seasons {
         rewrite * /seasons-4.json
+        file_server
+      }
+
+      handle /3/search/person {
+        rewrite * /tmdb-search-villeneuve.json
+        file_server
+      }
+
+      handle /3/person/1001/movie_credits {
+        rewrite * /tmdb-villeneuve-credits.json
         file_server
       }
     }
@@ -313,6 +335,18 @@ in
             DynamicUser = true;
           };
         };
+        systemd.services.jellyfin-director-completeness = {
+          after = [ "network-online.target" ];
+          wants = [ "network-online.target" ];
+          unitConfig.ConditionPathExists = "/etc/jellyfin-director-completeness/env";
+          serviceConfig = {
+            ExecStart = "${lib.getExe' directorCompletenessWorkerApp "director-completeness-worker.py"}";
+            EnvironmentFile = "/etc/jellyfin-director-completeness/env";
+            Restart = "on-failure";
+            RestartSec = "2s";
+            DynamicUser = true;
+          };
+        };
       };
 
   };
@@ -386,6 +420,13 @@ in
           for title, _watched, _fav in movies:
               jellyfin.succeed(
                   f"ffmpeg -f lavfi -i testsrc2=duration=1 '{movie_dir}/{title}.mkv' -y"
+              )
+
+
+          for title in ["Blade Runner 2049 (2017)", "Arrival (2016)", "Dune (2021)"]:
+              jellyfin.succeed(
+                  f"echo '<movie><director>Denis Villeneuve</director></movie>'"
+                  f" > '{movie_dir}/{title}.nfo'"
               )
 
           add_movie_lib = urlencode({
@@ -559,6 +600,19 @@ in
       ENVEOF
       """)
 
+
+      worker.succeed(f"""
+          mkdir -p /etc/jellyfin-director-completeness
+          cat > /etc/jellyfin-director-completeness/env <<'ENVEOF'
+      {common_env}TEMPORAL_TASK_QUEUE=director-completeness-queue
+      TMDB_API_KEY=test-key
+      TMDB_BASE_URL=http://mock-api:8081
+      ENVEOF
+      """)
+
+      worker.systemctl("start jellyfin-director-completeness.service")
+      worker.wait_for_unit("jellyfin-director-completeness.service")
+
       worker.systemctl("start jellyfin-recommender.service")
       worker.wait_for_unit("jellyfin-recommender.service")
 
@@ -618,5 +672,32 @@ in
           )
           assert result_json["result"], "MissingSeasonsWorkflow returned empty result"
           temporal.log(f"Missing seasons report:\n{result_json['result']}")
+
+      with temporal.nested("Run DirectorCompletenessWorkflow"):
+          temporal.succeed(
+              "temporal workflow start"
+              " --namespace jellyfin"
+              " --address 127.0.0.1:7233"
+              " --type DirectorCompletenessWorkflow"
+              " --task-queue director-completeness-queue"
+              " --workflow-id director-completeness-test"
+          )
+
+          result_json = json.loads(
+              temporal.wait_until_succeeds(
+                  "temporal workflow result"
+                  " --namespace jellyfin"
+                  " --address 127.0.0.1:7233"
+                  " --workflow-id director-completeness-test"
+                  " --output json",
+                  timeout=300,
+              )
+          )
+
+          assert result_json["status"] == "COMPLETED", (
+              f"DirectorCompletenessWorkflow did not complete: {result_json}"
+          )
+          assert result_json["result"], "DirectorCompletenessWorkflow returned empty result"
+          temporal.log(f"Director completeness report:\n{result_json['result']}")
     '';
 }

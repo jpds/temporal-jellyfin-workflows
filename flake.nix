@@ -140,10 +140,34 @@
           };
         };
 
+
+        directorCompletenessWorkerApp = python3.pkgs.buildPythonApplication rec {
+          pname = "jellyfin-director-completeness-worker";
+          version = "1.0.0";
+          pyproject = false;
+
+          dontUnpack = true;
+
+          installPhase = ''
+            install -Dm755 ${./director-completeness-worker.py} $out/bin/director-completeness-worker.py
+          '';
+
+          propagatedBuildInputs = with python3.pkgs; [
+            temporalio
+            commonLib
+          ];
+
+          meta = with pkgs.lib; {
+            description = "Temporal Jellyfin director completeness worker";
+            license = licenses.mit;
+          };
+        };
+
       in
       {
         packages.recommendationsWorkerApp = recommendationsWorkerApp;
         packages.missingSeasonsWorkerApp = missingSeasonsWorkerApp;
+        packages.directorCompletenessWorkerApp = directorCompletenessWorkerApp;
         packages.default = recommendationsWorkerApp;
 
         devShells.default = pkgs.mkShell {
@@ -162,7 +186,7 @@
 
         checks.jellyfin-recommender = pkgs.testers.runNixOSTest (
           import ./test.nix {
-            inherit recommendationsWorkerApp missingSeasonsWorkerApp pkgs;
+            inherit recommendationsWorkerApp missingSeasonsWorkerApp directorCompletenessWorkerApp pkgs;
             model = pkgs.fetchurl {
               url = "https://huggingface.co/unsloth/gemma-4-E2B-it-qat-GGUF/resolve/45dde4a86b6c5dce72297198762d2e8e68c0cbd4/gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf";
               hash = "sha256-zUUmST3Mv9Z5G+6IIuN+MDQAdNHU2araUs4Jr+/Wozo=";
