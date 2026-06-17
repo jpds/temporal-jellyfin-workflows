@@ -32,7 +32,7 @@ class JellyfinData:
 
 def _make_client() -> tuple[JellyfinClient, str]:
     client = JellyfinClient()
-    client.config.data["app.name"] = "jellyfin-recommender"
+    client.config.data["app.name"] = "temporal-jellyfin"
     client.config.data["app.version"] = "1.0.0"
     client.config.data["auth.ssl"] = True
     client.authenticate(
