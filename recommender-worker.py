@@ -17,7 +17,7 @@ from temporalio.client import Client
 from temporalio.contrib.openai_agents import ModelActivityParameters, OpenAIAgentsPlugin
 from temporalio.worker import Worker
 
-from activities import (
+from recommendations.activities import (
     fetch_favorites,
     fetch_in_progress_series,
     fetch_unwatched_movies,
@@ -25,7 +25,7 @@ from activities import (
     fetch_watched_movies,
     fetch_watched_series,
 )
-from workflows import RecommendationsWorkflow
+from recommendations.workflow import RecommendationsWorkflow
 
 set_default_openai_client(
     AsyncOpenAI(

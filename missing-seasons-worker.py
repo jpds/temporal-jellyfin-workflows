@@ -17,8 +17,11 @@ from temporalio.client import Client
 from temporalio.contrib.openai_agents import ModelActivityParameters, OpenAIAgentsPlugin
 from temporalio.worker import Worker
 
-from activities import fetch_external_seasons, fetch_series_season_presence
-from workflows import MissingSeasonsWorkflow
+from missing_seasons.activities import (
+    fetch_external_seasons,
+    fetch_series_season_presence,
+)
+from missing_seasons.workflow import MissingSeasonsWorkflow
 
 set_default_openai_client(
     AsyncOpenAI(

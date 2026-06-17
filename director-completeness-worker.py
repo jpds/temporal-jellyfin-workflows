@@ -17,13 +17,13 @@ from temporalio.client import Client
 from temporalio.contrib.openai_agents import ModelActivityParameters, OpenAIAgentsPlugin
 from temporalio.worker import Worker
 
-from activities import (
+from director_completeness.activities import (
     fetch_all_movie_titles,
     fetch_director_filmography,
     fetch_prominent_directors,
     resolve_director_tmdb_id,
 )
-from workflows import DirectorCompletenessWorkflow
+from director_completeness.workflow import DirectorCompletenessWorkflow
 
 set_default_openai_client(
     AsyncOpenAI(

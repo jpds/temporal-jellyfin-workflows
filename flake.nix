@@ -73,8 +73,11 @@
           dontUnpack = true;
 
           installPhase = ''
-            install -Dm644 ${./activities.py} $out/${python3.sitePackages}/activities.py
-            install -Dm644 ${./workflows.py}  $out/${python3.sitePackages}/workflows.py
+            mkdir -p $out/${python3.sitePackages}
+            install -Dm644 ${./common.py} $out/${python3.sitePackages}/common.py
+            cp -r ${./recommendations}       $out/${python3.sitePackages}/recommendations
+            cp -r ${./missing_seasons}       $out/${python3.sitePackages}/missing_seasons
+            cp -r ${./director_completeness} $out/${python3.sitePackages}/director_completeness
           '';
 
           propagatedBuildInputs = with python3.pkgs; [
@@ -86,8 +89,10 @@
           ];
 
           pythonImportsCheck = [
-            "activities"
-            "workflows"
+            "common"
+            "recommendations"
+            "missing_seasons"
+            "director_completeness"
           ];
 
           meta = with pkgs.lib; {
