@@ -162,6 +162,7 @@ def _build_missing_seasons_input(report: list[MissingSeasonReport]) -> list[dict
         if r.trailing:
             lines.append(f"  Trailing: {_fmt_season_infos(r.trailing)}")
         lines.append("")
+    lines.append(f"Today's date: {workflow.now().date().isoformat()}")
     return [
         {
             "role": "user",
