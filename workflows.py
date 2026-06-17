@@ -64,18 +64,24 @@ def _build_recommendations_input(data: JellyfinData) -> list[dict]:
         {
             "role": "user",
             "content": [
-                _recommendations_section("FAVORITES", data.favorites),
+                _recommendations_section("FAVORITES", sorted(data.favorites)),
                 _recommendations_section(
                     "WATCHED MOVIES",
-                    [m for m in data.watched_movies if m not in fav_set],
+                    sorted(m for m in data.watched_movies if m not in fav_set),
                 ),
                 _recommendations_section(
                     "WATCHED TV SERIES",
-                    [s for s in data.watched_series if s not in fav_set],
+                    sorted(s for s in data.watched_series if s not in fav_set),
                 ),
-                _recommendations_section("IN-PROGRESS TV SERIES", data.in_progress_series),
-                _recommendations_section("UNWATCHED MOVIES", data.unwatched_movies),
-                _recommendations_section("UNWATCHED TV SERIES", data.unwatched_series),
+                _recommendations_section(
+                    "IN-PROGRESS TV SERIES", sorted(data.in_progress_series)
+                ),
+                _recommendations_section(
+                    "UNWATCHED MOVIES", sorted(data.unwatched_movies)
+                ),
+                _recommendations_section(
+                    "UNWATCHED TV SERIES", sorted(data.unwatched_series)
+                ),
             ],
         }
     ]
@@ -149,7 +155,6 @@ def _fmt_season_infos(seasons: list[SeasonInfo]) -> str:
 
 def _build_missing_seasons_input(report: list[MissingSeasonReport]) -> list[dict]:
     lines = [
-        f"Today's date: {workflow.now().date().isoformat()}",
         "",
         "SERIES WITH MISSING SEASONS:",
         "",
