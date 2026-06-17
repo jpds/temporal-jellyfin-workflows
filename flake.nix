@@ -75,9 +75,10 @@
           installPhase = ''
             mkdir -p $out/${python3.sitePackages}
             install -Dm644 ${./common.py} $out/${python3.sitePackages}/common.py
-            cp -r ${./recommendations}       $out/${python3.sitePackages}/recommendations
-            cp -r ${./missing_seasons}       $out/${python3.sitePackages}/missing_seasons
-            cp -r ${./director_completeness} $out/${python3.sitePackages}/director_completeness
+            cp -r ${./recommendations}        $out/${python3.sitePackages}/recommendations
+            cp -r ${./missing_seasons}        $out/${python3.sitePackages}/missing_seasons
+            cp -r ${./director_completeness}  $out/${python3.sitePackages}/director_completeness
+            cp -r ${./world_explorer}         $out/${python3.sitePackages}/world_explorer
           '';
 
           propagatedBuildInputs = with python3.pkgs; [
@@ -93,6 +94,7 @@
             "recommendations"
             "missing_seasons"
             "director_completeness"
+            "world_explorer"
           ];
 
           meta = with pkgs.lib; {
@@ -168,11 +170,34 @@
           };
         };
 
+        worldExplorerWorkerApp = python3.pkgs.buildPythonApplication rec {
+          pname = "jellyfin-world-explorer-worker";
+          version = "1.0.0";
+          pyproject = false;
+
+          dontUnpack = true;
+
+          installPhase = ''
+            install -Dm755 ${./world-explorer-worker.py} $out/bin/world-explorer-worker.py
+          '';
+
+          propagatedBuildInputs = with python3.pkgs; [
+            temporalio
+            commonLib
+          ];
+
+          meta = with pkgs.lib; {
+            description = "Temporal Jellyfin world explorer worker";
+            license = licenses.mit;
+          };
+        };
+
       in
       {
         packages.recommendationsWorkerApp = recommendationsWorkerApp;
         packages.missingSeasonsWorkerApp = missingSeasonsWorkerApp;
         packages.directorCompletenessWorkerApp = directorCompletenessWorkerApp;
+        packages.worldExplorerWorkerApp = worldExplorerWorkerApp;
         packages.default = recommendationsWorkerApp;
 
         devShells.default = pkgs.mkShell {
@@ -191,7 +216,7 @@
 
         checks.jellyfin-recommender = pkgs.testers.runNixOSTest (
           import ./test.nix {
-            inherit recommendationsWorkerApp missingSeasonsWorkerApp directorCompletenessWorkerApp pkgs;
+            inherit recommendationsWorkerApp missingSeasonsWorkerApp directorCompletenessWorkerApp worldExplorerWorkerApp pkgs;
             model = pkgs.fetchurl {
               url = "https://huggingface.co/unsloth/gemma-4-E2B-it-qat-GGUF/resolve/45dde4a86b6c5dce72297198762d2e8e68c0cbd4/gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf";
               hash = "sha256-zUUmST3Mv9Z5G+6IIuN+MDQAdNHU2araUs4Jr+/Wozo=";

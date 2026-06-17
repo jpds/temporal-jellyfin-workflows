@@ -2,6 +2,7 @@
   recommendationsWorkerApp,
   missingSeasonsWorkerApp,
   directorCompletenessWorkerApp,
+  worldExplorerWorkerApp,
   pkgs,
   # Path to a GGUF model file used by llama-server. The flake passes a
   # fetchurl derivation; override it to point to any GGUF on disk when
@@ -347,6 +348,18 @@ in
             DynamicUser = true;
           };
         };
+        systemd.services.jellyfin-world-explorer = {
+          after = [ "network-online.target" ];
+          wants = [ "network-online.target" ];
+          unitConfig.ConditionPathExists = "/etc/jellyfin-world-explorer/env";
+          serviceConfig = {
+            ExecStart = "${lib.getExe' worldExplorerWorkerApp "world-explorer-worker.py"}";
+            EnvironmentFile = "/etc/jellyfin-world-explorer/env";
+            Restart = "on-failure";
+            RestartSec = "2s";
+            DynamicUser = true;
+          };
+        };
       };
 
   };
@@ -610,6 +623,13 @@ in
       ENVEOF
       """)
 
+      worker.succeed(f"""
+          mkdir -p /etc/jellyfin-world-explorer
+          cat > /etc/jellyfin-world-explorer/env <<'ENVEOF'
+      {common_env}TEMPORAL_TASK_QUEUE=world-explorer-queue
+      ENVEOF
+      """)
+
       worker.systemctl("start jellyfin-director-completeness.service")
       worker.wait_for_unit("jellyfin-director-completeness.service")
 
@@ -618,6 +638,9 @@ in
 
       worker.systemctl("start jellyfin-missing-seasons.service")
       worker.wait_for_unit("jellyfin-missing-seasons.service")
+
+      worker.systemctl("start jellyfin-world-explorer.service")
+      worker.wait_for_unit("jellyfin-world-explorer.service")
 
       with temporal.nested("Run RecommendationsWorkflow"):
           temporal.succeed(
@@ -699,5 +722,33 @@ in
           )
           assert result_json["result"], "DirectorCompletenessWorkflow returned empty result"
           temporal.log(f"Director completeness report:\n{result_json['result']}")
+
+      with temporal.nested("Run WorldExplorerWorkflow"):
+          temporal.succeed(
+              "temporal workflow start"
+              " --namespace jellyfin"
+              " --address 127.0.0.1:7233"
+              " --type WorldExplorerWorkflow"
+              " --task-queue world-explorer-queue"
+              " --workflow-id world-explorer-test"
+              """ --input '"French"'"""
+          )
+
+          result_json = json.loads(
+              temporal.wait_until_succeeds(
+                  "temporal workflow result"
+                  " --namespace jellyfin"
+                  " --address 127.0.0.1:7233"
+                  " --workflow-id world-explorer-test"
+                  " --output json",
+                  timeout=300,
+              )
+          )
+
+          assert result_json["status"] == "COMPLETED", (
+              f"WorldExplorerWorkflow did not complete: {result_json}"
+          )
+          assert result_json["result"], "WorldExplorerWorkflow returned empty result"
+          temporal.log(f"Language discovery report:\n{result_json['result']}")
     '';
 }
