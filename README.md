@@ -1,7 +1,7 @@
 # Temporal Jellyfin Workflows
 
 [Temporal](https://temporal.io) workflows that connect your Jellyfin library to an
-OpenAI-compatible LLM. Three workflows are provided:
+OpenAI-compatible LLM. These workflows are provided:
 
 - **`RecommendationsWorkflow`**: personalised film and TV recommendations based on your watch
   history and favorites
@@ -9,6 +9,8 @@ OpenAI-compatible LLM. Three workflows are provided:
   gap seasons (blocking a continuous run) from trailing seasons (newer releases not yet collected)
 - **`DirectorCompletenessWorkflow`**: finds directors well-represented in your movie collection
   and surfaces the gaps in their filmography
+- **`WorldExplorerWorkflow`**: takes a language, nationality, or country and recommends
+  world cinema and TV matching that target
 
 ## How it works
 
@@ -48,6 +50,22 @@ recommendation text as its result.
    Jellyfin has attributed to that director, to handle incomplete metadata)
 6. The report is sent to an LLM which summarises the gaps, prioritising directors where you
    are closest to a complete collection
+
+### WorldExplorerWorkflow
+
+Takes a freeform target as workflow input (a language such as `"Japanese"`, a nationality
+such as `"Belgian"`, or a country such as `"Brazil"`) and:
+
+1. Runs a validation agent that resolves the input to a canonical label and ISO 639-2 codes.
+   Countries and nationalities with a small set of official languages are resolved to all of
+   them (e.g. `"Belgian"` → French + Dutch). Inputs that are too ambiguous (e.g. `"Indian"`)
+   return a helpful suggestion naming the specific languages to try instead
+2. Runs five Temporal activities in parallel to fetch the full Jellyfin library: favorites,
+   watched movies, watched series, unwatched movies, and unwatched series
+3. Passes the full library and the resolved target label to a discovery agent, which
+   recommends 10-15 titles matching the target, blending unwatched titles already in the
+   library with fresh discoveries, tailored to the user's taste from their watch history and
+   favourites
 
 ## Configuration
 
@@ -107,6 +125,15 @@ OPENAI_BASE_URL=http://localhost:8080/v1 \
 OPENAI_API_KEY=not-needed \
 RECOMMENDER_MODEL=gemma4:e2b \
 python director-completeness-worker.py
+
+# World explorer worker (task queue: world-explorer-queue)
+JELLYFIN_URL=http://localhost:8096 \
+JELLYFIN_API_KEY=<token> \
+JELLYFIN_USER_ID=<uuid> \
+OPENAI_BASE_URL=http://localhost:8080/v1 \
+OPENAI_API_KEY=not-needed \
+RECOMMENDER_MODEL=gemma4:e2b \
+python world-explorer-worker.py
 ```
 
 ### Triggering workflows
@@ -135,6 +162,15 @@ temporal workflow start \
   --workflow-id my-director-completeness
 
 temporal workflow result --workflow-id my-director-completeness
+
+# World explorer (pass a language, nationality, or country as JSON input)
+temporal workflow start \
+  --type WorldExplorerWorkflow \
+  --task-queue world-explorer-queue \
+  --workflow-id my-world-explorer \
+  --input '"Japanese"'
+
+temporal workflow result --workflow-id my-world-explorer
 ```
 
 ## Testing
